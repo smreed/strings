@@ -1,0 +1,4 @@
+package strings
+
+func init() {
+}
