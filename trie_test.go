@@ -1,17 +1,19 @@
 package strings
 
 import (
-	"fmt"
 	"math/rand"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/armon/go-radix"
+	"github.com/hashicorp/go-immutable-radix"
 )
 
 func TestPutAndGet(t *testing.T) {
 	t.Parallel()
 
-	trie := NewPatriciaTrie()
+	trie := NewTrie()
 
 	m := map[string]interface{}{
 		"foo":           "foovalue",
@@ -40,10 +42,40 @@ func TestPutAndGet(t *testing.T) {
 	}
 }
 
+func TestContainsPrefix(t *testing.T) {
+	trie := NewTrie()
+	trie.Put("foo", "foovalue")
+	trie.Put("bar", "barvalue")
+	trie.Put("foobar", "foobarvalue")
+	trie.Put("f", "F")
+
+	m := map[string]bool{
+		"f":       true,
+		"fo":      true,
+		"foo":     true,
+		"foob":    true,
+		"fooba":   true,
+		"foobar":  true,
+		"foobarf": false,
+		"b":       true,
+		"ba":      true,
+		"bar":     true,
+		"barf":    false,
+		"c":       false,
+	}
+
+	for k, v := range m {
+		actual := trie.ContainsPrefix(k)
+		if v != actual {
+			t.Errorf("Expect value of %v for %v, got %v", v, k, actual)
+		}
+	}
+}
+
 func TestEntries(t *testing.T) {
 	t.Parallel()
 
-	trie := NewPatriciaTrie()
+	trie := NewTrie()
 	// Put in an explicit order to test node rewrites
 	trie.Put("foobar", "foobarvalue")
 	trie.Put("foo", "foovalue")
@@ -142,64 +174,162 @@ func TestKeyStartsWith(t *testing.T) {
 var intRes int
 var boolRes bool
 
-func BenchmarkTriePut4(b *testing.B) {
-	intRes, boolRes = benchmarkTriePut(4, b)
-}
-
-func BenchmarkTriePut8(b *testing.B) {
-	intRes, boolRes = benchmarkTriePut(8, b)
-}
-
 func BenchmarkTriePut24(b *testing.B) {
-	intRes, boolRes = benchmarkTriePut(24, b)
+	intRes, boolRes = benchmarkTriePut(NewTrie(), 24, b)
+}
+
+func BenchmarkGoRadixTriePut24(b *testing.B) {
+	intRes, boolRes = benchmarkTriePut(goradixTrie(), 24, b)
+}
+
+func BenchmarkImmutableTriePut24(b *testing.B) {
+	intRes, boolRes = benchmarkTriePut(hashicorpImmutableTrie(), 24, b)
 }
 
 func BenchmarkTriePut256(b *testing.B) {
-	intRes, boolRes = benchmarkTriePut(256, b)
+	intRes, boolRes = benchmarkTriePut(NewTrie(), 256, b)
+}
+
+func BenchmarkGoRadixTriePut256(b *testing.B) {
+	intRes, boolRes = benchmarkTriePut(goradixTrie(), 256, b)
+}
+
+func BenchmarkImmutableTriePut256(b *testing.B) {
+	intRes, boolRes = benchmarkTriePut(hashicorpImmutableTrie(), 256, b)
 }
 
 func BenchmarkTriePut1024(b *testing.B) {
-	intRes, boolRes = benchmarkTriePut(1024, b)
+	intRes, boolRes = benchmarkTriePut(NewTrie(), 1024, b)
 }
 
-func benchmarkTriePut(size int, b *testing.B) (int, bool) {
+func BenchmarkGoRadixTriePut1024(b *testing.B) {
+	intRes, boolRes = benchmarkTriePut(goradixTrie(), 1024, b)
+}
+
+func BenchmarkImmutableTriePut1024(b *testing.B) {
+	intRes, boolRes = benchmarkTriePut(hashicorpImmutableTrie(), 1024, b)
+}
+
+func goradixTrie() trie {
+	t := radix.New()
+	return &goradixAdapter{t: t}
+}
+
+type goradixAdapter struct {
+	t *radix.Tree
+}
+
+func (t *goradixAdapter) Put(k string, v interface{}) {
+	t.t.Insert(k, v)
+}
+
+func (t *goradixAdapter) Contains(k string) bool {
+	_, exists := t.t.Get(k)
+	return exists
+}
+
+func (t *goradixAdapter) ContainsPrefix(k string) bool {
+	prefix, _, _ := t.t.LongestPrefix(k)
+	return prefix == k
+}
+
+func (t *goradixAdapter) Size() int {
+	return t.t.Len()
+}
+
+func hashicorpImmutableTrie() trie {
+	t := iradix.New()
+	return &iradixAdapter{t: t}
+}
+
+type iradixAdapter struct {
+	t *iradix.Tree
+}
+
+func (t *iradixAdapter) Put(k string, v interface{}) {
+	t.t, _, _ = t.t.Insert([]byte(k), v)
+}
+
+func (t *iradixAdapter) Contains(k string) bool {
+	_, exists := t.t.Get([]byte(k))
+	return exists
+}
+
+func (t *iradixAdapter) ContainsPrefix(k string) bool {
+	prefix, _, _ := t.t.Root().LongestPrefix([]byte(k))
+	return string(prefix) == k
+}
+
+func (t *iradixAdapter) Size() int {
+	return t.t.Len()
+}
+
+type trie interface {
+	Put(k string, v interface{})
+	Contains(k string) bool
+	ContainsPrefix(k string) bool
+	Size() int
+}
+
+func benchmarkTriePut(t trie, size int, b *testing.B) (int, bool) {
 	b.ReportAllocs()
-	t := NewPatriciaTrie()
 	for n := 0; n < b.N; n++ {
 		t.Put(randomString(size), struct{}{})
 	}
-	fmt.Printf("size: %d, b.N=%d, size*b.N=%d, est=%d, ratio=%f\n", size, b.N, size*b.N, t.estimateSize(), float64(t.estimateSize())/float64(b.N*size))
-	return t.Size, t.Contains(randomString(size))
+	return t.Size(), t.Contains(randomString(size))
 }
 
 // this currently doesn't benchmark well because it loads a TON of matches into memory
 func BenchmarkTrieScan1x4x1024(b *testing.B) {
-	intRes, boolRes = benchmarkTrieScan(1, 4, 1024, b)
+	intRes, boolRes = benchmarkTrieScan(NewTrie(), 1, 4, 1024, b)
+}
+
+func BenchmarkGoRadixTrieScan1x4x1024(b *testing.B) {
+	intRes, boolRes = benchmarkTrieScan(goradixTrie(), 1, 4, 1024, b)
 }
 
 func BenchmarkTrieScan4x4x1024(b *testing.B) {
-	intRes, boolRes = benchmarkTrieScan(4, 4, 1024, b)
+	intRes, boolRes = benchmarkTrieScan(NewTrie(), 4, 4, 1024, b)
+}
+
+func BenchmarkGoRadixTrieScan4x4x1024(b *testing.B) {
+	intRes, boolRes = benchmarkTrieScan(goradixTrie(), 4, 4, 1024, b)
 }
 
 func BenchmarkTrieScan256x4x1024(b *testing.B) {
-	intRes, boolRes = benchmarkTrieScan(256, 4, 1024, b)
+	intRes, boolRes = benchmarkTrieScan(NewTrie(), 256, 4, 1024, b)
+}
+
+func BenchmarkGoRadixTrieScan256x4x1024(b *testing.B) {
+	intRes, boolRes = benchmarkTrieScan(goradixTrie(), 256, 4, 1024, b)
 }
 
 // this currently doesn't benchmark well because it loads a TON of matches into memory
 func BenchmarkTrieScan1x8x1024(b *testing.B) {
-	intRes, boolRes = benchmarkTrieScan(1, 8, 1024, b)
+	intRes, boolRes = benchmarkTrieScan(NewTrie(), 1, 8, 1024, b)
+}
+
+func BenchmarkGoRadixTrieScan1x8x1024(b *testing.B) {
+	intRes, boolRes = benchmarkTrieScan(goradixTrie(), 1, 8, 1024, b)
 }
 
 func BenchmarkTrieScan4x8x1024(b *testing.B) {
-	intRes, boolRes = benchmarkTrieScan(4, 8, 1024, b)
+	intRes, boolRes = benchmarkTrieScan(NewTrie(), 4, 8, 1024, b)
+}
+
+func BenchmarkGoRadixTrieScan4x8x1024(b *testing.B) {
+	intRes, boolRes = benchmarkTrieScan(goradixTrie(), 4, 8, 1024, b)
 }
 
 func BenchmarkTrieScan256x8x1024(b *testing.B) {
-	intRes, boolRes = benchmarkTrieScan(256, 8, 1024, b)
+	intRes, boolRes = benchmarkTrieScan(NewTrie(), 256, 8, 1024, b)
 }
 
-func benchmarkTrieScan(psize, size, n int, b *testing.B) (int, bool) {
-	t := NewPatriciaTrie()
+func BenchmarkGoRadixTrieScan256x8x1024(b *testing.B) {
+	intRes, boolRes = benchmarkTrieScan(goradixTrie(), 256, 8, 1024, b)
+}
+
+func benchmarkTrieScan(t trie, psize, size, n int, b *testing.B) (int, bool) {
 	for i := 0; i < n; i++ {
 		t.Put(randomString(size), struct{}{})
 	}

@@ -1,26 +1,24 @@
 package strings
 
 import (
+	"fmt"
 	"sort"
-	"unsafe"
 )
 
-type PatriciaTrie struct {
+type Trie struct {
 	root *node
-	Size int
+	size int
 }
 
-func NewPatriciaTrie() *PatriciaTrie {
-	return &PatriciaTrie{root: &node{}}
+func NewTrie() *Trie {
+	return &Trie{root: &node{}}
 }
 
-func (t *PatriciaTrie) estimateSize() uint64 {
-	i := uint64(unsafe.Sizeof(t))
-	i += t.root.estimateSize()
-	return i
+func (t *Trie) Size() int {
+	return t.size
 }
 
-func (t *PatriciaTrie) Get(key string) interface{} {
+func (t *Trie) Get(key string) interface{} {
 	if len(key) == 0 {
 		return nil
 	}
@@ -31,48 +29,30 @@ func (t *PatriciaTrie) Get(key string) interface{} {
 	return v.result
 }
 
-func (t *PatriciaTrie) Contains(key string) bool {
+func (t *Trie) Contains(key string) bool {
 	return t.Get(key) != nil
 }
 
-// todo an iterable or channel or stream based interface
-func (t *PatriciaTrie) SearchPrefix(prefix string) []interface{} {
-	if len(prefix) == 0 {
-		return nil
+func (t *Trie) ContainsPrefix(prefix string) bool {
+	if prefix == "" {
+		return false
 	}
 
 	keyBytes := []byte(prefix)
 	n := search(keyBytes, t.root)
-	if n == nil {
-		return nil
-	}
-
-	matches := []*node{n}
-	matches = append(matches, getNodes(n)...)
-
-	var values []interface{}
-	for _, match := range matches {
-		if match.value != nil {
-			values = append(values, match.value)
-		}
-	}
-	return values
+	return n != nil
 }
 
-func (t *PatriciaTrie) ContainsPrefix(prefix string) bool {
-	return len(t.SearchPrefix(prefix)) > 0
-}
-
-func (t *PatriciaTrie) Put(key string, value interface{}) {
+func (t *Trie) Put(key string, value interface{}) {
 	inserted, _ := t.insert([]byte(key), t.root, value)
 	if inserted {
-		t.Size++
+		t.size++
 	}
 }
 
-func (t *PatriciaTrie) Entries() map[string]interface{} {
+func (t *Trie) Entries() map[string]interface{} {
 	m := make(map[string]interface{})
-	for _, n := range getNodes(t.root) {
+	for _, n := range getNodesRecursive(t.root) {
 		if n.isReal() {
 			var k []byte
 			for nn := n; nn != nil; nn = nn.parent {
@@ -84,7 +64,7 @@ func (t *PatriciaTrie) Entries() map[string]interface{} {
 	return m
 }
 
-func (t *PatriciaTrie) insert(key []byte, n *node, value interface{}) (inserted, updated bool) {
+func (t *Trie) insert(key []byte, n *node, value interface{}) (inserted, updated bool) {
 	prefixLength := n.getCommonPrefixLength(key)
 	if t.root == n || prefixLength == 0 || (prefixLength < len(key) && prefixLength >= len(n.key)) {
 		newKey := key[prefixLength:]
@@ -146,23 +126,35 @@ func (t *PatriciaTrie) insert(key []byte, n *node, value interface{}) (inserted,
 }
 
 func search(keyBytes []byte, n *node) *node {
+	if n == nil {
+		return nil
+	}
+
+	if len(keyBytes) == 0 {
+		return nil
+	}
+
+	if len(n.key) == 0 {
+		n = n.findChild(keyBytes[0])
+	}
+
+	if n == nil {
+		return nil
+	}
+
 	prefixLength := n.getCommonPrefixLength(keyBytes)
-	if prefixLength == len(keyBytes) && prefixLength <= len(n.key) {
+	if prefixLength == len(keyBytes) {
 		return n
 	}
 
-	if len(n.key) == 0 || (prefixLength < len(keyBytes) && prefixLength >= len(n.key)) {
-		newKey := keyBytes[prefixLength:]
-		child := n.findChild(newKey[0])
-		if child != nil {
-			return search(newKey, child)
-		}
+	child := n.findChild(keyBytes[prefixLength])
+	if child == nil {
+		return nil
 	}
-
-	return nil
+	return search(keyBytes[prefixLength:], child)
 }
 
-func getNodes(parent *node) []*node {
+func getNodesRecursive(parent *node) []*node {
 	var nodes []*node
 	if parent != nil {
 		nodes = append(nodes, parent.children...)
@@ -188,13 +180,12 @@ type node struct {
 	value interface{}
 }
 
-func (n *node) estimateSize() uint64 {
-	i := uint64(unsafe.Sizeof(n))
-	i += uint64(len(n.key))
-	for _, c := range n.children {
-		i += c.estimateSize()
+func (n *node) String() string {
+	if n == nil {
+		return "{root}"
 	}
-	return i
+
+	return fmt.Sprintf("{key: %q, value: %v, children: %d}", string(n.key), n.value, len(n.children))
 }
 
 func (n *node) isReal() bool {
@@ -264,19 +255,15 @@ func (a nodeSort) Len() int           { return len(a) }
 func (a nodeSort) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a nodeSort) Less(i, j int) bool { return a[i].compareTo(a[j]) < 0 }
 
-func (n node) String() string {
-	return string(n.key)
-}
-
-func (n node) keyStartsWith(b byte) bool {
+func (n *node) keyStartsWith(b byte) bool {
 	return len(n.key) > 0 && n.key[0] == b
 }
 
-func (n node) getKeySuffix(offset int) []byte {
+func (n *node) getKeySuffix(offset int) []byte {
 	return n.key[offset:]
 }
 
-func (n node) findChild(b byte) *node {
+func (n *node) findChild(b byte) *node {
 	i := sort.Search(len(n.children), func(i int) bool { return n.children[i].key[0] >= b })
 	if i < len(n.children) && n.children[i].keyStartsWith(b) {
 		return n.children[i]
